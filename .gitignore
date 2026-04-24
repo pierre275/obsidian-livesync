@@ -28,4 +28,4 @@ data.json
 cov_profile/**
 
 coverage
-src/apps/cli/dist/*
+src/apps/cli/dist/*.worktrees
