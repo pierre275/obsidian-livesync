@@ -1,0 +1,90 @@
+'use strict';
+
+const { spawn } = require('child_process');
+
+const DEBOUNCE_MS    = parseInt(process.env.DEBOUNCE_SECS ?? '30') * 1000;
+const GIT_DIR        = process.env.GIT_DIR        ?? '/vault';
+const GIT_REMOTE     = process.env.GIT_REMOTE     ?? 'origin';
+const GIT_BRANCH     = process.env.GIT_BRANCH     ?? 'main';
+const GIT_USER_NAME  = process.env.GIT_USER_NAME;
+const GIT_USER_EMAIL = process.env.GIT_USER_EMAIL;
+
+function run(cmd, args) {
+    return new Promise((resolve, reject) => {
+        const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'inherit'] });
+        let out = '';
+        proc.stdout.on('data', (d) => { out += d; });
+        proc.on('close', (code) => {
+            if (code === 0) resolve(out.trim());
+            else reject(new Error(`${cmd} ${args.join(' ')} exited with code ${code}`));
+        });
+        proc.on('error', reject);
+    });
+}
+
+let running = false;
+
+async function commit() {
+    if (running) {
+        console.log('[git-committer] commit already in progress, skipping');
+        return;
+    }
+    running = true;
+    try {
+        await run('livesync-cli', ['sync']);
+        await run('livesync-cli', ['mirror']);
+        await run('git', ['-C', GIT_DIR, 'add', '.']);
+        const status = await run('git', ['-C', GIT_DIR, 'status', '--porcelain']);
+        if (!status) {
+            console.log('[git-committer] no changes to commit');
+            return;
+        }
+        const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        await run('git', ['-C', GIT_DIR, 'commit', '-m', `sync ${ts}`]);
+        await run('git', ['-C', GIT_DIR, 'push', GIT_REMOTE, GIT_BRANCH]);
+        console.log(`[git-committer] committed and pushed at ${ts}`);
+    } catch (e) {
+        console.error('[git-committer] commit failed:', e.message);
+    } finally {
+        running = false;
+    }
+}
+
+async function main() {
+    if (!GIT_USER_NAME || !GIT_USER_EMAIL) {
+        console.error('[git-committer] error: GIT_USER_NAME and GIT_USER_EMAIL env vars are required');
+        process.exit(1);
+    }
+
+    // Configure git identity inside the repo
+    await run('git', ['-C', GIT_DIR, 'config', 'user.name', GIT_USER_NAME]);
+    await run('git', ['-C', GIT_DIR, 'config', 'user.email', GIT_USER_EMAIL]);
+
+    // Initial sync on startup
+    console.log('[git-committer] startup: running initial sync + mirror + commit');
+    await commit();
+
+    // Spawn watch and debounce
+    let timer = null;
+    const watch = spawn('livesync-cli', ['watch'], { stdio: ['ignore', 'pipe', 'inherit'] });
+
+    watch.stdout.on('data', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => commit().catch(console.error), DEBOUNCE_MS);
+    });
+
+    watch.on('exit', (code) => {
+        console.error(`[git-committer] livesync-cli watch exited with code ${code}`);
+        process.exit(1);
+    });
+
+    watch.on('error', (err) => {
+        console.error('[git-committer] failed to spawn livesync-cli watch:', err.message);
+        process.exit(1);
+    });
+}
+
+main().catch((e) => {
+    console.error('[git-committer] fatal:', e.message);
+    process.exit(1);
+});
