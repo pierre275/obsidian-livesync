@@ -25,6 +25,9 @@ export async function runWatch(context: CLICommandContext): Promise<void> {
             .on("error", (err) => {
                 console.error("[watch] Error:", err);
                 reject(err);
+            })
+            .on("complete", (info) => {
+                reject(new Error(`[watch] Changes feed completed unexpectedly: ${JSON.stringify(info)}`));
             });
     });
 }

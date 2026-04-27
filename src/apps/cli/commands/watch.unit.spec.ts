@@ -12,7 +12,7 @@ vi.mock("../lib/pouchdb-node", () => {
 import { PouchDB } from "../lib/pouchdb-node";
 import { runWatch } from "./watch";
 
-function makeContext(overrides: Record<string, unknown> = {}) {
+function makeContext() {
     return {
         core: {
             services: { control: { activated: Promise.resolve() } },
@@ -25,7 +25,6 @@ function makeContext(overrides: Record<string, unknown> = {}) {
         },
         vaultPath: "/tmp/vault",
         settingsPath: "/tmp/vault/.livesync/settings.json",
-        ...overrides,
     } as any;
 }
 
@@ -33,8 +32,8 @@ describe("runWatch", () => {
     let writeSpy: ReturnType<typeof vi.spyOn>;
 
     beforeEach(() => {
-        writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
         vi.clearAllMocks();
+        writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     });
 
     afterEach(() => {
@@ -84,5 +83,24 @@ describe("runWatch", () => {
 
         capturedChangeHandler?.({ id: "notes/hello.md" });
         expect(writeSpy).toHaveBeenCalledWith("notes/hello.md\n");
+    });
+
+    it("rejects when changes feed emits error", async () => {
+        let capturedErrorHandler: ((err: any) => void) | undefined;
+        const { PouchDB: MockPouchDB } = await import("../lib/pouchdb-node");
+
+        const mockOn = vi.fn((event: string, handler: (c: any) => void) => {
+            if (event === "error") capturedErrorHandler = handler;
+            return { on: mockOn };
+        });
+        (MockPouchDB as any).mockImplementationOnce(function () {
+            return { changes: vi.fn().mockReturnValue({ on: mockOn }) };
+        });
+
+        const watchPromise = runWatch(makeContext());
+        await Promise.resolve();
+
+        capturedErrorHandler?.(new Error("connection reset"));
+        await expect(watchPromise).rejects.toThrow("connection reset");
     });
 });
