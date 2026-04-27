@@ -9,6 +9,7 @@ import { promptForPassphrase, readStdinAsUtf8, toArrayBuffer, toVaultRelativePat
 import { collectPeers, openP2PHost, parseTimeoutSeconds, syncWithPeer } from "./p2p";
 import { performFullScan } from "@lib/serviceFeatures/offlineScanner";
 import { UnresolvedErrorManager } from "@lib/services/base/UnresolvedErrorManager";
+import { runWatch } from "./watch";
 
 export async function runCommand(options: CLIOptions, context: CLICommandContext): Promise<boolean> {
     const { vaultPath, core, settingsPath } = context;
@@ -365,6 +366,12 @@ export async function runCommand(options: CLIOptions, context: CLICommandContext
         const log = (msg: unknown) => console.error(`[Mirror] ${msg}`);
         const errorManager = new UnresolvedErrorManager(core.services.appLifecycle);
         return await performFullScan(core as any, log, errorManager, false, true);
+    }
+
+    if (options.command === "watch") {
+        console.error("[Command] watch");
+        await runWatch(context);
+        return true;
     }
 
     throw new Error(`Unsupported command: ${options.command}`);
