@@ -1,0 +1,36 @@
+# docker-compose.git-committer.yml
+#
+# Runs a livesync-cli container that watches CouchDB for changes and
+# commits vault files to a git repository.
+#
+# Prerequisites:
+#   1. CouchDB running on the host (accessible via localhost).
+#   2. /path/to/vault must be an initialised git repo with a remote configured.
+#   3. SSH key for git push mounted at /root/.ssh (or use HTTPS with a token).
+#   4. livesync settings at /path/to/livesync-data/.livesync/settings.json
+#
+# Usage:
+#   cp .env.git-committer.example .env.git-committer
+#   # edit .env.git-committer
+#   docker compose -f docker-compose.git-committer.yml --env-file .env.git-committer up -d
+#
+services:
+  git-committer:
+    build:
+      context: .
+      dockerfile: src/apps/cli/Dockerfile
+      target: git-committer
+    network_mode: host
+    volumes:
+      - ${VAULT_PATH}:/vault
+      - ${LIVESYNC_DATA_PATH}:/data
+      - ${SSH_PATH:-~/.ssh}:/root/.ssh:ro
+    environment:
+      LIVESYNC_DB_PATH: /data
+      DEBOUNCE_SECS: ${DEBOUNCE_SECS:-30}
+      GIT_DIR: /vault
+      GIT_REMOTE: ${GIT_REMOTE:-origin}
+      GIT_BRANCH: ${GIT_BRANCH:-main}
+      GIT_USER_NAME: ${GIT_USER_NAME}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL}
+    restart: unless-stopped
