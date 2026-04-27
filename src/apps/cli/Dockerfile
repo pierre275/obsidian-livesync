@@ -109,3 +109,47 @@ RUN chmod +x /usr/local/bin/livesync-cli
 VOLUME ["/data"]
 
 ENTRYPOINT ["livesync-cli"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Stage 4 — git-committer
+#  Extends the runtime image with git, ssh-client, and the committer script.
+#  Entrypoint: node /app/git-committer.js
+#
+#  Build:
+#    docker build -f src/apps/cli/Dockerfile --target git-committer -t livesync-git-committer .
+#
+#  Required env vars:
+#    GIT_USER_NAME, GIT_USER_EMAIL
+#  Optional env vars (with defaults):
+#    DEBOUNCE_SECS=30, GIT_DIR=/vault, GIT_REMOTE=origin, GIT_BRANCH=main
+#    LIVESYNC_DB_PATH=/data
+#
+#  Volumes:
+#    /vault  — git repository where markdown files are materialized
+#    /data   — livesync local database + settings.json
+#    /root/.ssh — SSH key for git push (mount read-only)
+# ─────────────────────────────────────────────────────────────────────────────
+FROM node:22-slim AS git-committer
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy pre-compiled external node_modules from runtime-deps stage
+COPY --from=runtime-deps /deps/node_modules ./node_modules
+
+# Copy the built CLI bundle from builder stage
+COPY --from=builder /build/src/apps/cli/dist ./dist
+
+# Copy the git-committer script
+COPY src/apps/cli/git-committer.js ./git-committer.js
+
+# Install entrypoint wrapper (needed by git-committer.js which calls livesync-cli)
+COPY src/apps/cli/docker-entrypoint.sh /usr/local/bin/livesync-cli
+RUN chmod +x /usr/local/bin/livesync-cli
+
+VOLUME ["/vault", "/data"]
+
+ENTRYPOINT ["node", "/app/git-committer.js"]
