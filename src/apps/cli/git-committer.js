@@ -2,7 +2,7 @@
 
 const { spawn } = require('child_process');
 
-const DEBOUNCE_MS    = parseInt(process.env.DEBOUNCE_SECS ?? '30') * 1000;
+const DEBOUNCE_MS    = (parseInt(process.env.DEBOUNCE_SECS ?? '30') || 30) * 1000;
 const GIT_DIR        = process.env.GIT_DIR        ?? '/vault';
 const GIT_REMOTE     = process.env.GIT_REMOTE     ?? 'origin';
 const GIT_BRANCH     = process.env.GIT_BRANCH     ?? 'main';
@@ -75,7 +75,7 @@ async function main() {
 
     watch.on('exit', (code) => {
         console.error(`[git-committer] livesync-cli watch exited with code ${code}`);
-        process.exit(1);
+        process.exit(code ?? 1);
     });
 
     watch.on('error', (err) => {
