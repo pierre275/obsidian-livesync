@@ -134,7 +134,7 @@ FROM node:22-slim AS git-committer
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git openssh-client \
+    && apt-get install -y --no-install-recommends git openssh-client ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-compiled external node_modules from runtime-deps stage
