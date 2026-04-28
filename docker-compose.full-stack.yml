@@ -23,6 +23,14 @@ services:
       COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
     volumes:
       - ${COUCHDB_DATA_PATH}:/opt/couchdb/data
+    healthcheck:
+      # CouchDB takes a few seconds to initialise. git-committer must wait
+      # until /_up returns 200 before running `livesync-cli sync`.
+      test: ["CMD", "curl", "-fs", "http://localhost:5984/_up"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
     restart: unless-stopped
 
   git-committer:
@@ -33,7 +41,8 @@ services:
     networks:
       - livesync
     depends_on:
-      - couchdb
+      couchdb:
+        condition: service_healthy
     volumes:
       - ${VAULT_PATH}:/vault
       - ${LIVESYNC_DATA_PATH}:/data

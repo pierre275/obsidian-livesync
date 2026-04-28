@@ -79,7 +79,8 @@ async function main() {
         }
     }
 
-    // Initial sync on startup
+    // Initial sync on startup. commit() catches its own errors and logs them
+    // — failures here don't crash the container; the watch loop will retry.
     console.log('[git-committer] startup: running initial sync + mirror + commit');
     await commit();
 
