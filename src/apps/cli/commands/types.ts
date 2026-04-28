@@ -12,6 +12,7 @@ export type CLICommand =
     | "pull"
     | "pull-rev"
     | "setup"
+    | "gen-setup-uri"
     | "put"
     | "cat"
     | "cat-rev"
@@ -48,6 +49,7 @@ export const VALID_COMMANDS = new Set([
     "pull",
     "pull-rev",
     "setup",
+    "gen-setup-uri",
     "put",
     "cat",
     "cat-rev",
