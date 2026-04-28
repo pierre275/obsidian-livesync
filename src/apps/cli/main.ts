@@ -237,6 +237,24 @@ export async function main() {
         return;
     }
 
+    if (options.command === "watch") {
+        // watch only needs to read settings and connect to the remote CouchDB —
+        // initialising the full LiveSync core would lock the local PouchDB and
+        // prevent concurrent `livesync-cli sync` runs from the git-committer.
+        if (!options.databasePath) {
+            console.error("Error: watch requires a database-path");
+            process.exit(1);
+        }
+        const settingsResolved = options.settingsPath
+            ? path.resolve(options.settingsPath)
+            : path.join(path.resolve(options.databasePath), SETTINGS_FILE);
+        const settingsRaw = await fs.readFile(settingsResolved, "utf8");
+        const settings = JSON.parse(settingsRaw);
+        const { runWatch } = await import("./commands/watch");
+        await runWatch(settings);
+        return;
+    }
+
     // Resolve vault path
     const vaultPath = path.resolve(options.databasePath!);
     // Check if vault directory exists

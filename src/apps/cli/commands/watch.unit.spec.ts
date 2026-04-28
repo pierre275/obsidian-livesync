@@ -12,20 +12,13 @@ vi.mock("../lib/pouchdb-node", () => {
 import { PouchDB } from "../lib/pouchdb-node";
 import { runWatch } from "./watch";
 
-function makeContext() {
+function makeSettings() {
     return {
-        core: {
-            services: { control: { activated: Promise.resolve() } },
-            getSettings: () => ({
-                couchDB_URI: "http://localhost:5984",
-                couchDB_DBNAME: "testdb",
-                couchDB_USER: "admin",
-                couchDB_PASSWORD: "secret",
-            }),
-        },
-        vaultPath: "/tmp/vault",
-        settingsPath: "/tmp/vault/.livesync/settings.json",
-    } as any;
+        couchDB_URI: "http://localhost:5984",
+        couchDB_DBNAME: "testdb",
+        couchDB_USER: "admin",
+        couchDB_PASSWORD: "secret",
+    };
 }
 
 describe("runWatch", () => {
@@ -41,7 +34,7 @@ describe("runWatch", () => {
     });
 
     it("creates remote PouchDB with correct URL and auth", async () => {
-        runWatch(makeContext());
+        runWatch(makeSettings());
         await Promise.resolve(); // flush microtasks
 
         expect(PouchDB).toHaveBeenCalledWith(
@@ -58,7 +51,7 @@ describe("runWatch", () => {
         const mockInstance = { changes: vi.fn().mockReturnValue({ on: vi.fn().mockReturnThis() }) };
         (MockPouchDB as any).mockImplementationOnce(function () { return mockInstance; });
 
-        runWatch(makeContext());
+        runWatch(makeSettings());
         await Promise.resolve();
 
         expect(mockInstance.changes).toHaveBeenCalledWith(
@@ -78,7 +71,7 @@ describe("runWatch", () => {
             return { changes: vi.fn().mockReturnValue({ on: mockOn }) };
         });
 
-        runWatch(makeContext());
+        runWatch(makeSettings());
         await Promise.resolve();
 
         capturedChangeHandler?.({ id: "notes/hello.md" });
@@ -97,7 +90,7 @@ describe("runWatch", () => {
             return { changes: vi.fn().mockReturnValue({ on: mockOn }) };
         });
 
-        const watchPromise = runWatch(makeContext());
+        const watchPromise = runWatch(makeSettings());
         await Promise.resolve();
 
         capturedErrorHandler?.(new Error("connection reset"));
