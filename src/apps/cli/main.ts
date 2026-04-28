@@ -220,6 +220,23 @@ export async function main() {
         return;
     }
 
+    if (options.command === "gen-setup-uri") {
+        if (!options.databasePath) {
+            console.error("Error: gen-setup-uri requires a database-path");
+            process.exit(1);
+        }
+        if (options.commandArgs.length < 1) {
+            console.error("Error: gen-setup-uri requires a passphrase argument");
+            process.exit(1);
+        }
+        const settingsResolved = options.settingsPath
+            ? path.resolve(options.settingsPath)
+            : path.join(path.resolve(options.databasePath), SETTINGS_FILE);
+        const { genSetupUri } = await import("./commands/genSetupUri");
+        await genSetupUri(settingsResolved, options.commandArgs[0]);
+        return;
+    }
+
     // Resolve vault path
     const vaultPath = path.resolve(options.databasePath!);
     // Check if vault directory exists
