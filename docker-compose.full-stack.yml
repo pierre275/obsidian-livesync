@@ -1,0 +1,45 @@
+# docker-compose.full-stack.yml
+#
+# Full bootstrap: CouchDB + livesync git-committer.
+# Use the setup-stack.js script to populate .env.full-stack first:
+#   node setup-stack.js
+#
+# Or manually:
+#   cp .env.git-committer.example .env.full-stack
+#   # add COUCHDB_*, CODEBERG_*, LIVESYNC_PASSPHRASE
+#   docker compose -f docker-compose.full-stack.yml --env-file .env.full-stack up -d
+#
+services:
+  couchdb:
+    image: couchdb:3
+    network_mode: host
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+    volumes:
+      - ${COUCHDB_DATA_PATH:-./couchdb-data}:/opt/couchdb/data
+    restart: unless-stopped
+
+  git-committer:
+    build:
+      context: .
+      dockerfile: src/apps/cli/Dockerfile
+      target: git-committer
+    network_mode: host
+    depends_on:
+      - couchdb
+    volumes:
+      - ${VAULT_PATH}:/vault
+      - ${LIVESYNC_DATA_PATH}:/data
+    environment:
+      LIVESYNC_DB_PATH: /data
+      DEBOUNCE_SECS: ${DEBOUNCE_SECS:-30}
+      GIT_DIR: /vault
+      GIT_REMOTE: ${GIT_REMOTE:-origin}
+      GIT_BRANCH: ${GIT_BRANCH:-main}
+      GIT_USER_NAME: ${GIT_USER_NAME}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL}
+      CODEBERG_USERNAME: ${CODEBERG_USERNAME}
+      CODEBERG_TOKEN: ${CODEBERG_TOKEN}
+      CODEBERG_REPO: ${CODEBERG_REPO}
+    restart: unless-stopped
