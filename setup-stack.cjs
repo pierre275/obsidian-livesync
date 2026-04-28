@@ -408,14 +408,18 @@ async function main() {
     await waitForCouch(localCouchUrl);
     console.log(' ok');
 
-    // 9. configure CouchDB
+    // 9. configure CouchDB. CORS origins must be explicit (NOT '*') because
+    //    Access-Control-Allow-Credentials: true requires non-wildcard origins.
+    //    Origins are the ones the LiveSync plugin uses on each platform:
+    //    desktop = app://obsidian.md, mobile = capacitor://localhost,
+    //    browser/test = http://localhost.
     const auth = `${COUCHDB_USER}:${couchPassword}`;
     const cfg = [
         ['/_node/_local/_config/chttpd/enable_cors', 'true'],
-        ['/_node/_local/_config/cors/origins', '*'],
+        ['/_node/_local/_config/cors/origins', 'app://obsidian.md,capacitor://localhost,http://localhost'],
         ['/_node/_local/_config/cors/credentials', 'true'],
-        ['/_node/_local/_config/cors/methods', 'GET, PUT, POST, HEAD, DELETE'],
-        ['/_node/_local/_config/cors/headers', 'accept, authorization, content-type, origin, referer, x-csrf-token'],
+        ['/_node/_local/_config/cors/methods', 'GET,PUT,POST,HEAD,DELETE'],
+        ['/_node/_local/_config/cors/headers', 'accept,authorization,content-type,origin,referer'],
         ['/_node/_local/_config/couchdb/single_node', 'true'],
     ];
     for (const [p, v] of cfg) {
