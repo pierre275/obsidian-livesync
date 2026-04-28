@@ -332,7 +332,34 @@ async function main() {
     // git-committer reaches CouchDB via the docker bridge network (service name).
     const internalCouchUrl = `http://couchdb:5984`;
 
-    // 7. write .env.full-stack
+    // 7. clone Codeberg repo first (must come BEFORE we write into the vault
+    //    dir — git clone refuses to clone into a non-empty directory).
+    if (await pathExists(vaultPath)) {
+        const isGit = await pathExists(path.join(vaultPath, '.git'));
+        if (!isGit) {
+            console.error(`[setup] ${vaultPath} exists and is not a git repo. Aborting.`);
+            process.exit(1);
+        }
+        console.log(`[setup] vault path already a git repo — skipping clone`);
+    } else {
+        const cloneUrl = `https://oauth2:${cbToken}@codeberg.org/${cbRepo}.git`;
+        const cloneRes = spawnSync('git', ['clone', cloneUrl, vaultPath], { stdio: 'inherit' });
+        if (cloneRes.status !== 0) { console.error('[setup] git clone failed'); process.exit(1); }
+    }
+
+    // 7a. Detect the actual default branch of the cloned repo. Codeberg's
+    //     default varies (main on newer repos, master on older), so don't
+    //     hardcode — read what HEAD points at.
+    const branchProbe = spawnSync('git', ['-C', vaultPath, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' });
+    let gitBranch = (branchProbe.stdout || '').trim();
+    if (!gitBranch || gitBranch === 'HEAD') {
+        // Empty repo with no commits — create a main branch as placeholder.
+        spawnSync('git', ['-C', vaultPath, 'checkout', '-b', 'main'], { stdio: 'inherit' });
+        gitBranch = 'main';
+    }
+    console.log(`[setup] using branch: ${gitBranch}`);
+
+    // 8. write .env.full-stack (now that we know the branch)
     const envBody = [
         `COUCHDB_USER=${COUCHDB_USER}`,
         `COUCHDB_PASSWORD=${couchPassword}`,
@@ -345,7 +372,7 @@ async function main() {
         `DEBOUNCE_SECS=${debounce}`,
         `VAULT_DIR=/vault`,
         `GIT_REMOTE=origin`,
-        `GIT_BRANCH=main`,
+        `GIT_BRANCH=${gitBranch}`,
         `GIT_USER_NAME=${gitName}`,
         `GIT_USER_EMAIL=${gitEmail}`,
         `CODEBERG_USERNAME=${cbUser}`,
@@ -356,7 +383,7 @@ async function main() {
     await fs.writeFile(ENV_FILE, envBody, { mode: 0o600 });
     console.log(`[setup] wrote ${ENV_FILE} (mode 0600)`);
 
-    // 8. write livesync settings.json into the vault dir's .livesync subdir.
+    // 9. write livesync settings.json into the vault dir's .livesync subdir.
     //    Uses the docker-internal URL so git-committer can reach CouchDB
     //    via the bridge network.
     const settingsDir = path.join(vaultPath, '.livesync');
@@ -380,23 +407,8 @@ async function main() {
     };
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
     console.log(`[setup] wrote ${settingsPath} (mode 0600)`);
-
     // (settings.public.json is built later inside generateSetupUri() from
     // env vars — that way it always reflects the latest values.)
-
-    // 9. clone Codeberg repo (or use existing vault if it's already a git repo)
-    if (await pathExists(vaultPath)) {
-        const isGit = await pathExists(path.join(vaultPath, '.git'));
-        if (!isGit) {
-            console.error(`[setup] ${vaultPath} exists and is not a git repo. Aborting.`);
-            process.exit(1);
-        }
-        console.log(`[setup] vault path already a git repo — skipping clone`);
-    } else {
-        const cloneUrl = `https://oauth2:${cbToken}@codeberg.org/${cbRepo}.git`;
-        const cloneRes = spawnSync('git', ['clone', cloneUrl, vaultPath], { stdio: 'inherit' });
-        if (cloneRes.status !== 0) { console.error('[setup] git clone failed'); process.exit(1); }
-    }
 
     // 9b. ensure livesync internal dirs are gitignored inside the vault repo.
     //     Without this, git-committer would commit settings.json (with secrets)
@@ -474,6 +486,23 @@ async function main() {
     // 12. Generate setup URI (writes it to setup-uri.txt next to .env.full-stack)
     const result = await generateSetupUri(ENV_FILE);
     if (!result) { process.exit(1); }
+
+    console.log('=== Next steps ===');
+    console.log('');
+    console.log('1) Open Obsidian → Self-hosted LiveSync → Setup wizard → Use existing setup URI');
+    console.log(`   The URI is in: ${path.join(workDir, 'setup-uri.txt')}`);
+    console.log('');
+    console.log('2) After Obsidian connects and finishes the first sync, it will LOCK the');
+    console.log('   remote database to your device. The git-committer needs the lock');
+    console.log('   removed (or itself accepted) before it can replicate.');
+    console.log('   In Obsidian: Self-hosted LiveSync → Hatch panel → "Mark this device as');
+    console.log('   resolved" / "Lock" toggle → unlock the database.');
+    console.log('');
+    console.log('3) Watch the committer pick up changes:');
+    console.log('   docker logs -f obsidian-livesync-git-committer-1');
+    console.log('   You should see "[git-committer] committed and pushed at ..." within');
+    console.log(`   ${process.env.SETUP_DEBOUNCE ?? '30'}s of any change in Obsidian.`);
+    console.log('');
 }
 
 main().catch((e) => { console.error('[setup] fatal:', e.message); process.exit(1); });
