@@ -29,3 +29,7 @@ cov_profile/**
 
 coverage
 src/apps/cli/dist/*.worktrees
+
+# stack env files (contain secrets — never commit)
+.env.full-stack
+.env.git-committer
