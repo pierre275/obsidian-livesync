@@ -204,7 +204,7 @@ async function main() {
     }
 
     // 4. Public hostname / IP and externally-reachable CouchDB port.
-    const publicHost  = await answer('SETUP_PUBLIC_HOST', 'Public hostname or IPv4 (how Obsidian clients reach this server, e.g. natalia210.mikrus.xyz)');
+    const publicHost  = await answer('SETUP_PUBLIC_HOST', 'Public hostname or IPv4 address (how Obsidian clients reach this server)');
     if (!publicHost) { console.error('[setup] public host is required'); process.exit(1); }
     const couchPort   = await answer('SETUP_COUCHDB_PORT', 'External port to expose CouchDB on');
     if (!couchPort || !/^\d+$/.test(couchPort)) { console.error('[setup] CouchDB port must be a number'); process.exit(1); }
