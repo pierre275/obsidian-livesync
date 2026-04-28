@@ -119,6 +119,32 @@ async function waitForCouch(baseUrl, timeoutMs = 60000) {
     throw new Error(`CouchDB did not become ready within ${timeoutMs}ms`);
 }
 
+// ---------- update mode ----------
+// If .env.full-stack already exists in cwd or in the dir passed as argv[2],
+// skip all prompts and just `git pull && docker compose up -d --build`.
+async function updateMode(envFile) {
+    console.log('=== Self-hosted LiveSync stack: UPDATE mode ===');
+    console.log(`Detected existing ${envFile} — pulling latest code and rebuilding.\n`);
+
+    // 1. git pull in the repo
+    console.log('[update] git pull...');
+    const pullRes = spawnSync('git', ['-C', REPO_ROOT, 'pull', '--ff-only'], { stdio: 'inherit' });
+    if (pullRes.status !== 0) { console.error('[update] git pull failed'); process.exit(1); }
+
+    // 2. submodule update (in case lib pointer moved)
+    spawnSync('git', ['-C', REPO_ROOT, 'submodule', 'update', '--init', 'src/lib'], { stdio: 'inherit' });
+
+    // 3. rebuild + restart all services
+    console.log('[update] rebuilding and restarting stack...');
+    const upRes = spawnSync('docker',
+        ['compose', '-f', COMPOSE_FILE, '--env-file', envFile, 'up', '-d', '--build'],
+        { stdio: 'inherit' });
+    if (upRes.status !== 0) { console.error('[update] docker compose up failed'); process.exit(1); }
+
+    console.log('\n=== Stack updated and running ===');
+    process.exit(0);
+}
+
 // ---------- main flow ----------
 async function main() {
     if (!checkCommand('docker', ['--version'])) {
@@ -132,6 +158,17 @@ async function main() {
     if (!checkCommand('git', ['--version'])) {
         console.error('[setup] git is required but not found in PATH');
         process.exit(1);
+    }
+
+    // Auto-detect update mode: look for an existing .env.full-stack in
+    // (a) explicit argv[2] dir, (b) cwd, or (c) common location.
+    const candidateDirs = [process.argv[2], process.cwd()].filter(Boolean);
+    for (const dir of candidateDirs) {
+        const candidate = path.join(path.resolve(dir), '.env.full-stack');
+        if (await pathExists(candidate)) {
+            await updateMode(candidate);
+            return;
+        }
     }
 
     console.log('=== Self-hosted LiveSync stack setup ===\n');
