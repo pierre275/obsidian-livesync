@@ -33,4 +33,10 @@ services:
       GIT_BRANCH: ${GIT_BRANCH:-main}
       GIT_USER_NAME: ${GIT_USER_NAME}
       GIT_USER_EMAIL: ${GIT_USER_EMAIL}
+      # Optional: pass CouchDB connection via env so `livesync-cli watch`
+      # doesn't depend on settings.json (which livesync's first sync mutates).
+      COUCHDB_URI: ${COUCHDB_URI:-}
+      COUCHDB_USER: ${COUCHDB_USER:-}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:-}
+      COUCHDB_DBNAME: ${COUCHDB_DBNAME:-}
     restart: unless-stopped

@@ -238,20 +238,42 @@ export async function main() {
     }
 
     if (options.command === "watch") {
-        // watch only needs to read settings and connect to the remote CouchDB —
-        // initialising the full LiveSync core would lock the local PouchDB and
-        // prevent concurrent `livesync-cli sync` runs from the git-committer.
-        if (!options.databasePath) {
-            console.error("Error: watch requires a database-path");
+        // watch only needs the remote CouchDB connection — it does NOT initialise
+        // the LiveSync core (which would lock the local PouchDB and block concurrent
+        // `livesync-cli sync` runs from the git-committer).
+        //
+        // Connection details are read from env vars FIRST and fall back to
+        // settings.json. Env vars are preferred because livesync's sync command
+        // mutates settings.json on first run, wiping these fields.
+        let couchDB_URI    = process.env.COUCHDB_URI ?? "";
+        let couchDB_DBNAME = process.env.COUCHDB_DBNAME ?? "";
+        let couchDB_USER   = process.env.COUCHDB_USER ?? "";
+        let couchDB_PASSWORD = process.env.COUCHDB_PASSWORD ?? "";
+
+        if (!couchDB_URI || !couchDB_DBNAME || !couchDB_USER || !couchDB_PASSWORD) {
+            // Fall back to settings.json
+            if (!options.databasePath) {
+                console.error("Error: watch requires either env vars (COUCHDB_URI, COUCHDB_DBNAME, COUCHDB_USER, COUCHDB_PASSWORD) or a database-path");
+                process.exit(1);
+            }
+            const settingsResolved = options.settingsPath
+                ? path.resolve(options.settingsPath)
+                : path.join(path.resolve(options.databasePath), SETTINGS_FILE);
+            const settingsRaw = await fs.readFile(settingsResolved, "utf8");
+            const settings = JSON.parse(settingsRaw);
+            couchDB_URI      = couchDB_URI      || settings.couchDB_URI      || "";
+            couchDB_DBNAME   = couchDB_DBNAME   || settings.couchDB_DBNAME   || "";
+            couchDB_USER     = couchDB_USER     || settings.couchDB_USER     || "";
+            couchDB_PASSWORD = couchDB_PASSWORD || settings.couchDB_PASSWORD || "";
+        }
+
+        if (!couchDB_URI || !couchDB_DBNAME) {
+            console.error(`Error: watch requires couchDB_URI and couchDB_DBNAME (got URI="${couchDB_URI}" DBNAME="${couchDB_DBNAME}")`);
             process.exit(1);
         }
-        const settingsResolved = options.settingsPath
-            ? path.resolve(options.settingsPath)
-            : path.join(path.resolve(options.databasePath), SETTINGS_FILE);
-        const settingsRaw = await fs.readFile(settingsResolved, "utf8");
-        const settings = JSON.parse(settingsRaw);
+
         const { runWatch } = await import("./commands/watch");
-        await runWatch(settings);
+        await runWatch({ couchDB_URI, couchDB_DBNAME, couchDB_USER, couchDB_PASSWORD });
         return;
     }
 

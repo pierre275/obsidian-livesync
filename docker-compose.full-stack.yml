@@ -45,6 +45,12 @@ services:
       GIT_BRANCH: ${GIT_BRANCH:-main}
       GIT_USER_NAME: ${GIT_USER_NAME}
       GIT_USER_EMAIL: ${GIT_USER_EMAIL}
+      # CouchDB connection passed via env so `livesync-cli watch` does not have
+      # to read settings.json — livesync's first sync mutates that file.
+      COUCHDB_URI: ${COUCHDB_INTERNAL_URI:-http://couchdb:5984}
+      COUCHDB_USER: ${COUCHDB_USER}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+      COUCHDB_DBNAME: ${COUCHDB_DBNAME}
       CODEBERG_USERNAME: ${CODEBERG_USERNAME}
       CODEBERG_TOKEN: ${CODEBERG_TOKEN}
       CODEBERG_REPO: ${CODEBERG_REPO}
