@@ -76,7 +76,15 @@ async function commit() {
     running = true;
     try {
         ensureSettingsFromEnv();
-        await run('livesync-cli', ['sync']);
+        // sync sometimes exits with code 1 even when replication succeeded
+        // (livesync's CLI returns non-zero on partial states). Don't fail
+        // the whole cycle — mirror reads from the local DB and will pick
+        // up whatever sync managed to replicate.
+        try {
+            await run('livesync-cli', ['sync']);
+        } catch (e) {
+            console.error('[git-committer] sync exited non-zero — continuing with mirror anyway:', e.message);
+        }
         await run('livesync-cli', ['mirror']);
         await run('git', ['-C', VAULT_DIR, 'add', '.']);
         const status = await run('git', ['-C', VAULT_DIR, 'status', '--porcelain']);
