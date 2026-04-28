@@ -60,6 +60,20 @@ async function main() {
     await run('git', ['-C', GIT_DIR, 'config', 'user.name', GIT_USER_NAME]);
     await run('git', ['-C', GIT_DIR, 'config', 'user.email', GIT_USER_EMAIL]);
 
+    // Configure Codeberg remote with embedded PAT (if env vars provided)
+    const CODEBERG_TOKEN = process.env.CODEBERG_TOKEN;
+    const CODEBERG_REPO  = process.env.CODEBERG_REPO;
+    if (CODEBERG_TOKEN && CODEBERG_REPO) {
+        const remoteUrl = `https://oauth2:${CODEBERG_TOKEN}@codeberg.org/${CODEBERG_REPO}.git`;
+        try {
+            await run('git', ['-C', GIT_DIR, 'remote', 'set-url', GIT_REMOTE, remoteUrl]);
+            console.log(`[git-committer] remote ${GIT_REMOTE} updated to codeberg.org/${CODEBERG_REPO}`);
+        } catch {
+            await run('git', ['-C', GIT_DIR, 'remote', 'add', GIT_REMOTE, remoteUrl]);
+            console.log(`[git-committer] remote ${GIT_REMOTE} added → codeberg.org/${CODEBERG_REPO}`);
+        }
+    }
+
     // Initial sync on startup
     console.log('[git-committer] startup: running initial sync + mirror + commit');
     await commit();
