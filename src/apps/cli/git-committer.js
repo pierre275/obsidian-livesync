@@ -1,13 +1,57 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-const DEBOUNCE_MS    = (parseInt(process.env.DEBOUNCE_SECS ?? '30') || 30) * 1000;
+const DEBOUNCE_MS      = (parseInt(process.env.DEBOUNCE_SECS ?? '30') || 30) * 1000;
 const VAULT_DIR        = process.env.VAULT_DIR        ?? '/vault';
-const GIT_REMOTE     = process.env.GIT_REMOTE     ?? 'origin';
-const GIT_BRANCH     = process.env.GIT_BRANCH     ?? 'main';
-const GIT_USER_NAME  = process.env.GIT_USER_NAME;
-const GIT_USER_EMAIL = process.env.GIT_USER_EMAIL;
+const GIT_REMOTE       = process.env.GIT_REMOTE       ?? 'origin';
+const GIT_BRANCH       = process.env.GIT_BRANCH       ?? 'main';
+const GIT_USER_NAME    = process.env.GIT_USER_NAME;
+const GIT_USER_EMAIL   = process.env.GIT_USER_EMAIL;
+const LIVESYNC_DB_PATH = process.env.LIVESYNC_DB_PATH ?? '/data';
+const COUCHDB_URI      = process.env.COUCHDB_URI ?? '';
+const COUCHDB_USER     = process.env.COUCHDB_USER ?? '';
+const COUCHDB_PASSWORD = process.env.COUCHDB_PASSWORD ?? '';
+const COUCHDB_DBNAME   = process.env.COUCHDB_DBNAME ?? '';
+const LIVESYNC_PASSPHRASE = process.env.LIVESYNC_PASSPHRASE ?? '';
+
+const SETTINGS_PATH = path.join(LIVESYNC_DB_PATH, '.livesync', 'settings.json');
+
+/**
+ * livesync-cli sync mutates settings.json on first run — wiping plain
+ * couchDB_URI/USER/PASSWORD/DBNAME and replacing them with encrypted
+ * versions tied to runtime state. On subsequent runs livesync may fail
+ * to recover the connection. To make sync deterministic across container
+ * restarts we rewrite the plain fields from env vars before every sync.
+ *
+ * Only applied when COUCHDB_URI is set (env-driven mode).
+ */
+function ensureSettingsFromEnv() {
+    if (!COUCHDB_URI) return;
+    let settings = {};
+    try {
+        settings = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    } catch { /* will create */ }
+
+    settings.couchDB_URI      = COUCHDB_URI;
+    settings.couchDB_USER     = COUCHDB_USER;
+    settings.couchDB_PASSWORD = COUCHDB_PASSWORD;
+    settings.couchDB_DBNAME   = COUCHDB_DBNAME;
+    if (LIVESYNC_PASSPHRASE) settings.passphrase = LIVESYNC_PASSPHRASE;
+    settings.encrypt = true;
+    settings.isConfigured = true;
+    // livesync stores credentials encrypted with a key cached in localStorage
+    // when configPassphraseStore is empty. Setting LOCK_LOCAL_STORAGE keeps the
+    // plain fields authoritative each run.
+    settings.configPassphraseStore = 'LOCK_LOCAL_STORAGE';
+    delete settings.encryptedCouchDBConnection;
+    delete settings.encryptedPassphrase;
+
+    fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2), { mode: 0o600 });
+}
 
 function run(cmd, args) {
     return new Promise((resolve, reject) => {
@@ -31,6 +75,7 @@ async function commit() {
     }
     running = true;
     try {
+        ensureSettingsFromEnv();
         await run('livesync-cli', ['sync']);
         await run('livesync-cli', ['mirror']);
         await run('git', ['-C', VAULT_DIR, 'add', '.']);
