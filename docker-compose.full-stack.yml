@@ -44,12 +44,14 @@ services:
       couchdb:
         condition: service_healthy
     volumes:
-      - ${VAULT_PATH}:/vault
-      - ${LIVESYNC_DATA_PATH}:/data
+      # Single mount: livesync-cli treats its database-path arg as both the DB
+      # location AND the vault root, so /vault and /data must be the same dir.
+      # Notes, settings, leveldb files, and the .git repo all live here.
+      - ${VAULT_PATH}:/data
     environment:
       LIVESYNC_DB_PATH: /data
       DEBOUNCE_SECS: ${DEBOUNCE_SECS:-30}
-      VAULT_DIR: /vault
+      VAULT_DIR: /data
       GIT_REMOTE: ${GIT_REMOTE:-origin}
       GIT_BRANCH: ${GIT_BRANCH:-main}
       GIT_USER_NAME: ${GIT_USER_NAME}

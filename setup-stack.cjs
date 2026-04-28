@@ -133,7 +133,7 @@ function readEnvFile(envFile) {
 // ---------- shared: generate setup URI and write it to disk ----------
 async function generateSetupUri(envFile) {
     const env = readEnvFile(envFile);
-    const required = ['LIVESYNC_DATA_PATH', 'PUBLIC_HOST', 'COUCHDB_PORT',
+    const required = ['VAULT_PATH', 'PUBLIC_HOST', 'COUCHDB_PORT',
                       'COUCHDB_USER', 'COUCHDB_PASSWORD', 'COUCHDB_DBNAME', 'LIVESYNC_PASSPHRASE'];
     for (const k of required) {
         if (!env[k]) {
@@ -161,7 +161,7 @@ async function generateSetupUri(envFile) {
         usePluginSync: false,
         isConfigured: true,
     };
-    const settingsDir = path.join(env.LIVESYNC_DATA_PATH, '.livesync');
+    const settingsDir = path.join(env.VAULT_PATH, '.livesync');
     await fs.mkdir(settingsDir, { recursive: true });
     const publicSettingsPath = path.join(settingsDir, 'settings.public.json');
     await fs.writeFile(publicSettingsPath, JSON.stringify(publicSettings, null, 2), { mode: 0o600 });
@@ -314,9 +314,10 @@ async function main() {
     const couchPort   = await answer('SETUP_COUCHDB_PORT', 'External port to expose CouchDB on');
     if (!couchPort || !/^\d+$/.test(couchPort)) { console.error('[setup] CouchDB port must be a number'); process.exit(1); }
 
-    // 5. paths (default to subdirs of workDir) and identity
-    const vaultPath  = path.resolve(workDir, await answer('SETUP_VAULT_PATH',         'Vault host path',         { defaultValue: 'vault' }));
-    const dataPath   = path.resolve(workDir, await answer('SETUP_DATA_PATH',          'LiveSync data host path', { defaultValue: 'livesync-data' }));
+    // 5. paths (default to subdirs of workDir) and identity.
+    // The vault directory is the single dir that holds notes + livesync DB
+    // + settings + .git. (livesync-cli conflates "vault" and "database-path".)
+    const vaultPath  = path.resolve(workDir, await answer('SETUP_VAULT_PATH',         'Vault host path (holds notes, .git, and livesync DB)', { defaultValue: 'vault' }));
     const couchData  = path.resolve(workDir, await answer('SETUP_COUCHDB_DATA_PATH',  'CouchDB data host path',  { defaultValue: 'couchdb-data' }));
     const gitName    = await answer('SETUP_GIT_NAME',  'Git author name',  { defaultValue: 'livesync-bot' });
     const gitEmail   = await answer('SETUP_GIT_EMAIL', 'Git author email', { defaultValue: 'livesync-bot@example.com' });
@@ -341,7 +342,6 @@ async function main() {
         `PUBLIC_HOST=${publicHost}`,
         `LIVESYNC_PASSPHRASE=${livesyncPass}`,
         `VAULT_PATH=${vaultPath}`,
-        `LIVESYNC_DATA_PATH=${dataPath}`,
         `DEBOUNCE_SECS=${debounce}`,
         `VAULT_DIR=/vault`,
         `GIT_REMOTE=origin`,
@@ -356,9 +356,10 @@ async function main() {
     await fs.writeFile(ENV_FILE, envBody, { mode: 0o600 });
     console.log(`[setup] wrote ${ENV_FILE} (mode 0600)`);
 
-    // 8. write livesync settings.json — uses the docker-internal URL so git-committer
-    //    can reach CouchDB via the bridge network.
-    const settingsDir = path.join(dataPath, '.livesync');
+    // 8. write livesync settings.json into the vault dir's .livesync subdir.
+    //    Uses the docker-internal URL so git-committer can reach CouchDB
+    //    via the bridge network.
+    const settingsDir = path.join(vaultPath, '.livesync');
     await fs.mkdir(settingsDir, { recursive: true });
     const settingsPath = path.join(settingsDir, 'settings.json');
     const settings = {
@@ -383,7 +384,7 @@ async function main() {
     // (settings.public.json is built later inside generateSetupUri() from
     // env vars — that way it always reflects the latest values.)
 
-    // 9. clone Codeberg repo
+    // 9. clone Codeberg repo (or use existing vault if it's already a git repo)
     if (await pathExists(vaultPath)) {
         const isGit = await pathExists(path.join(vaultPath, '.git'));
         if (!isGit) {
@@ -395,6 +396,25 @@ async function main() {
         const cloneUrl = `https://oauth2:${cbToken}@codeberg.org/${cbRepo}.git`;
         const cloneRes = spawnSync('git', ['clone', cloneUrl, vaultPath], { stdio: 'inherit' });
         if (cloneRes.status !== 0) { console.error('[setup] git clone failed'); process.exit(1); }
+    }
+
+    // 9b. ensure livesync internal dirs are gitignored inside the vault repo.
+    //     Without this, git-committer would commit settings.json (with secrets)
+    //     and the leveldb files into Codeberg.
+    const vaultGitignore = path.join(vaultPath, '.gitignore');
+    let gitignoreText = '';
+    try { gitignoreText = await fs.readFile(vaultGitignore, 'utf8'); } catch { /* missing */ }
+    const ignoreEntries = ['/.livesync/', '/data-*-livesync-v2/', '/runtime/'];
+    let changed = false;
+    for (const entry of ignoreEntries) {
+        if (!gitignoreText.split('\n').some((l) => l.trim() === entry)) {
+            gitignoreText += (gitignoreText && !gitignoreText.endsWith('\n') ? '\n' : '') + entry + '\n';
+            changed = true;
+        }
+    }
+    if (changed) {
+        await fs.writeFile(vaultGitignore, gitignoreText);
+        console.log('[setup] added livesync entries to vault .gitignore');
     }
 
     // 8. start CouchDB
