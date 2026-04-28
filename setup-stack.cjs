@@ -9,9 +9,7 @@ const readline = require('node:readline');
 const { spawn, spawnSync } = require('node:child_process');
 
 const REPO_ROOT = __dirname;
-const ENV_FILE = path.join(REPO_ROOT, '.env.full-stack');
 const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.full-stack.yml');
-const COUCHDB_URL = 'http://localhost:5984';
 const COUCHDB_USER = 'admin';
 const COUCHDB_DBNAME = 'livesync';
 
@@ -98,8 +96,8 @@ async function pathExists(p) {
 }
 
 // ---------- HTTP helpers ----------
-async function couchPut(urlPath, body, basicAuth) {
-    return fetch(`${COUCHDB_URL}${urlPath}`, {
+async function couchPut(baseUrl, urlPath, body, basicAuth) {
+    return fetch(`${baseUrl}${urlPath}`, {
         method: 'PUT',
         headers: {
             'Content-Type': 'application/json',
@@ -109,11 +107,11 @@ async function couchPut(urlPath, body, basicAuth) {
     });
 }
 
-async function waitForCouch(timeoutMs = 60000) {
+async function waitForCouch(baseUrl, timeoutMs = 60000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         try {
-            const res = await fetch(`${COUCHDB_URL}/`);
+            const res = await fetch(`${baseUrl}/`);
             if (res.ok) return;
         } catch {}
         await new Promise((r) => setTimeout(r, 1500));
@@ -123,10 +121,6 @@ async function waitForCouch(timeoutMs = 60000) {
 
 // ---------- main flow ----------
 async function main() {
-    if (await pathExists(ENV_FILE)) {
-        console.error(`[setup] ${ENV_FILE} already exists. Delete it before re-running.`);
-        process.exit(1);
-    }
     if (!checkCommand('docker', ['--version'])) {
         console.error('[setup] docker is required but not found in PATH');
         process.exit(1);
@@ -163,24 +157,48 @@ async function main() {
         console.log('ok');
     }
 
-    // 3. paths and identity
-    const vaultPath  = path.resolve(await answer('SETUP_VAULT_PATH',         'Vault host path',         { defaultValue: './vault' }));
-    const dataPath   = path.resolve(await answer('SETUP_DATA_PATH',          'LiveSync data host path', { defaultValue: './livesync-data' }));
-    const couchData  = path.resolve(await answer('SETUP_COUCHDB_DATA_PATH',  'CouchDB data host path',  { defaultValue: './couchdb-data' }));
+    // 3. Working directory — where to put .env.full-stack and (by default) the data dirs.
+    const workDir   = path.resolve(await answer('SETUP_WORK_DIR', 'Working directory for stack data and .env.full-stack', { defaultValue: process.cwd() }));
+    await fs.mkdir(workDir, { recursive: true });
+    const ENV_FILE  = path.join(workDir, '.env.full-stack');
+    if (await pathExists(ENV_FILE)) {
+        console.error(`[setup] ${ENV_FILE} already exists. Delete it before re-running.`);
+        process.exit(1);
+    }
+
+    // 4. Public hostname / IP and externally-reachable CouchDB port.
+    const publicHost  = await answer('SETUP_PUBLIC_HOST', 'Public hostname or IPv4 (how Obsidian clients reach this server, e.g. natalia210.mikrus.xyz)');
+    if (!publicHost) { console.error('[setup] public host is required'); process.exit(1); }
+    const couchPort   = await answer('SETUP_COUCHDB_PORT', 'External port to expose CouchDB on');
+    if (!couchPort || !/^\d+$/.test(couchPort)) { console.error('[setup] CouchDB port must be a number'); process.exit(1); }
+
+    // 5. paths (default to subdirs of workDir) and identity
+    const vaultPath  = path.resolve(workDir, await answer('SETUP_VAULT_PATH',         'Vault host path',         { defaultValue: 'vault' }));
+    const dataPath   = path.resolve(workDir, await answer('SETUP_DATA_PATH',          'LiveSync data host path', { defaultValue: 'livesync-data' }));
+    const couchData  = path.resolve(workDir, await answer('SETUP_COUCHDB_DATA_PATH',  'CouchDB data host path',  { defaultValue: 'couchdb-data' }));
     const gitName    = await answer('SETUP_GIT_NAME',  'Git author name',  { defaultValue: 'livesync-bot' });
     const gitEmail   = await answer('SETUP_GIT_EMAIL', 'Git author email', { defaultValue: 'livesync-bot@example.com' });
     const debounce   = await answer('SETUP_DEBOUNCE',  'Debounce seconds', { defaultValue: '30' });
 
-    // 4. generate secrets
+    // 6. generate secrets
     const couchPassword = crypto.randomBytes(24).toString('base64url');
     const livesyncPass  = crypto.randomBytes(36).toString('base64url');
 
-    // 5. write .env.full-stack
+    // The setup script reaches CouchDB via the host port mapping while configuring it.
+    const localCouchUrl  = `http://127.0.0.1:${couchPort}`;
+    // Obsidian clients reach CouchDB via the public hostname + external port.
+    const publicCouchUrl = `http://${publicHost}:${couchPort}`;
+    // git-committer reaches CouchDB via the docker bridge network (service name).
+    const internalCouchUrl = `http://couchdb:5984`;
+
+    // 7. write .env.full-stack
     const envBody = [
         `COUCHDB_USER=${COUCHDB_USER}`,
         `COUCHDB_PASSWORD=${couchPassword}`,
         `COUCHDB_DBNAME=${COUCHDB_DBNAME}`,
         `COUCHDB_DATA_PATH=${couchData}`,
+        `COUCHDB_PORT=${couchPort}`,
+        `PUBLIC_HOST=${publicHost}`,
         `LIVESYNC_PASSPHRASE=${livesyncPass}`,
         `VAULT_PATH=${vaultPath}`,
         `LIVESYNC_DATA_PATH=${dataPath}`,
@@ -198,12 +216,13 @@ async function main() {
     await fs.writeFile(ENV_FILE, envBody, { mode: 0o600 });
     console.log(`[setup] wrote ${ENV_FILE} (mode 0600)`);
 
-    // 6. write livesync settings.json
+    // 8. write livesync settings.json — uses the docker-internal URL so git-committer
+    //    can reach CouchDB via the bridge network.
     const settingsDir = path.join(dataPath, '.livesync');
     await fs.mkdir(settingsDir, { recursive: true });
     const settingsPath = path.join(settingsDir, 'settings.json');
     const settings = {
-        couchDB_URI: COUCHDB_URL,
+        couchDB_URI: internalCouchUrl,
         couchDB_USER: COUCHDB_USER,
         couchDB_PASSWORD: couchPassword,
         couchDB_DBNAME: COUCHDB_DBNAME,
@@ -220,6 +239,11 @@ async function main() {
     };
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
     console.log(`[setup] wrote ${settingsPath} (mode 0600)`);
+
+    // Also write a public-facing settings file used only to generate the setup URI
+    // (Obsidian clients connect from outside, so they need the public URL).
+    const publicSettingsPath = path.join(settingsDir, 'settings.public.json');
+    await fs.writeFile(publicSettingsPath, JSON.stringify({ ...settings, couchDB_URI: publicCouchUrl }, null, 2), { mode: 0o600 });
 
     // 7. clone Codeberg repo
     if (await pathExists(vaultPath)) {
@@ -243,7 +267,7 @@ async function main() {
     if (upRes.status !== 0) { console.error('[setup] docker compose up failed'); process.exit(1); }
 
     process.stdout.write('[setup] waiting for CouchDB to be ready...');
-    await waitForCouch();
+    await waitForCouch(localCouchUrl);
     console.log(' ok');
 
     // 9. configure CouchDB
@@ -257,40 +281,55 @@ async function main() {
         ['/_node/_local/_config/couchdb/single_node', 'true'],
     ];
     for (const [p, v] of cfg) {
-        const r = await couchPut(p, v, auth);
+        const r = await couchPut(localCouchUrl, p, v, auth);
         if (!r.ok) { console.error(`[setup] PUT ${p} → ${r.status}`); process.exit(1); }
     }
     for (const db of ['_users', '_replicator', COUCHDB_DBNAME]) {
-        const r = await couchPut(`/${db}`, undefined, auth);
+        const r = await couchPut(localCouchUrl, `/${db}`, undefined, auth);
         if (!r.ok && r.status !== 412) {
             console.error(`[setup] PUT /${db} → ${r.status}`); process.exit(1);
         }
     }
     console.log('[setup] CouchDB configured');
 
-    // 10. start git-committer
-    console.log('[setup] starting git-committer...');
-    const cup = spawnSync('docker',
-        ['compose', '-f', COMPOSE_FILE, '--env-file', ENV_FILE, 'up', '-d', 'git-committer'],
+    // 10. Build the git-committer image (without starting) so we can use it to
+    //     generate the setup URI BEFORE the container's first sync runs and
+    //     mutates settings.json.
+    console.log('[setup] building git-committer image...');
+    const buildRes = spawnSync('docker',
+        ['compose', '-f', COMPOSE_FILE, '--env-file', ENV_FILE, 'build', 'git-committer'],
         { stdio: 'inherit' });
-    if (cup.status !== 0) { console.error('[setup] git-committer start failed'); process.exit(1); }
+    if (buildRes.status !== 0) { console.error('[setup] git-committer build failed'); process.exit(1); }
 
-    // 11. generate setup URI for Obsidian
+    // 11. Generate setup URI for Obsidian. Uses settings.public.json (with the
+    //     public-facing CouchDB URL) — Obsidian clients connect from outside.
     const oneTimePass = crypto.randomBytes(6).toString('base64url');
-    // Wait briefly for the container to be ready for exec
-    await new Promise((r) => setTimeout(r, 3000));
     const setupRes = spawnSync('docker',
         ['compose', '-f', COMPOSE_FILE, '--env-file', ENV_FILE,
-         'exec', '-T', 'git-committer',
-         'livesync-cli', 'gen-setup-uri', oneTimePass],
+         'run', '--rm', '--no-deps',
+         '--entrypoint', 'livesync-cli',
+         'git-committer',
+         '--settings', '/data/.livesync/settings.public.json',
+         'gen-setup-uri', oneTimePass],
         { encoding: 'utf8' });
     if (setupRes.status !== 0) {
         console.error('[setup] gen-setup-uri failed:', setupRes.stderr);
         process.exit(1);
     }
     const setupUri = setupRes.stdout.trim();
+    // Remove the public settings file — secrets shouldn't linger on disk.
+    await fs.unlink(publicSettingsPath).catch(() => {});
+
+    // 12. Now start git-committer
+    console.log('[setup] starting git-committer...');
+    const cup = spawnSync('docker',
+        ['compose', '-f', COMPOSE_FILE, '--env-file', ENV_FILE, 'up', '-d', 'git-committer'],
+        { stdio: 'inherit' });
+    if (cup.status !== 0) { console.error('[setup] git-committer start failed'); process.exit(1); }
 
     console.log('\n=== Stack is up ===\n');
+    console.log(`CouchDB exposed at: ${publicCouchUrl}`);
+    console.log('');
     console.log('Paste this into the Obsidian Self-hosted LiveSync plugin (Setup wizard → Use existing setup URI):');
     console.log('');
     console.log(setupUri);
