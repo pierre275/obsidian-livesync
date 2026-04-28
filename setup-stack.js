@@ -185,7 +185,7 @@ async function main() {
         `VAULT_PATH=${vaultPath}`,
         `LIVESYNC_DATA_PATH=${dataPath}`,
         `DEBOUNCE_SECS=${debounce}`,
-        `GIT_DIR=/vault`,
+        `VAULT_DIR=/vault`,
         `GIT_REMOTE=origin`,
         `GIT_BRANCH=main`,
         `GIT_USER_NAME=${gitName}`,

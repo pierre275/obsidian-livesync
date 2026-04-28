@@ -121,7 +121,7 @@ ENTRYPOINT ["livesync-cli"]
 #  Required env vars:
 #    GIT_USER_NAME, GIT_USER_EMAIL
 #  Optional env vars (with defaults):
-#    DEBOUNCE_SECS=30, GIT_DIR=/vault, GIT_REMOTE=origin, GIT_BRANCH=main
+#    DEBOUNCE_SECS=30, VAULT_DIR=/vault, GIT_REMOTE=origin, GIT_BRANCH=main
 #    LIVESYNC_DB_PATH=/data
 #
 #  Volumes:

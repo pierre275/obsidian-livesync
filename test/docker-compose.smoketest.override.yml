@@ -1,0 +1,24 @@
+# Smoketest override: replaces network_mode: host with a bridge network +
+# port mapping so the test works on Docker Desktop (Mac/Windows) where
+# host networking does not reach the host's localhost.
+#
+# CouchDB is exposed on host port 5984 (so the smoketest's curl from the host can
+# configure it). git-committer reaches it via the bridge service name `couchdb`.
+# The smoketest writes a settings.json with couchDB_URI=http://couchdb:5984
+# so livesync-cli inside git-committer connects via the docker network.
+services:
+  couchdb:
+    network_mode: ""
+    networks:
+      - smoketest
+    ports:
+      - "5984:5984"
+
+  git-committer:
+    network_mode: ""
+    networks:
+      - smoketest
+
+networks:
+  smoketest:
+    driver: bridge

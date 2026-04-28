@@ -3,7 +3,7 @@
 const { spawn } = require('child_process');
 
 const DEBOUNCE_MS    = (parseInt(process.env.DEBOUNCE_SECS ?? '30') || 30) * 1000;
-const GIT_DIR        = process.env.GIT_DIR        ?? '/vault';
+const VAULT_DIR        = process.env.VAULT_DIR        ?? '/vault';
 const GIT_REMOTE     = process.env.GIT_REMOTE     ?? 'origin';
 const GIT_BRANCH     = process.env.GIT_BRANCH     ?? 'main';
 const GIT_USER_NAME  = process.env.GIT_USER_NAME;
@@ -33,15 +33,15 @@ async function commit() {
     try {
         await run('livesync-cli', ['sync']);
         await run('livesync-cli', ['mirror']);
-        await run('git', ['-C', GIT_DIR, 'add', '.']);
-        const status = await run('git', ['-C', GIT_DIR, 'status', '--porcelain']);
+        await run('git', ['-C', VAULT_DIR, 'add', '.']);
+        const status = await run('git', ['-C', VAULT_DIR, 'status', '--porcelain']);
         if (!status) {
             console.log('[git-committer] no changes to commit');
             return;
         }
         const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
-        await run('git', ['-C', GIT_DIR, 'commit', '-m', `sync ${ts}`]);
-        await run('git', ['-C', GIT_DIR, 'push', GIT_REMOTE, GIT_BRANCH]);
+        await run('git', ['-C', VAULT_DIR, 'commit', '-m', `sync ${ts}`]);
+        await run('git', ['-C', VAULT_DIR, 'push', GIT_REMOTE, GIT_BRANCH]);
         console.log(`[git-committer] committed and pushed at ${ts}`);
     } catch (e) {
         console.error('[git-committer] commit failed:', e.message);
@@ -56,9 +56,14 @@ async function main() {
         process.exit(1);
     }
 
+    // Trust the vault dir — host UID that cloned the repo will not match
+    // the container UID. Use '*' wildcard since this single-purpose
+    // container only operates on $VAULT_DIR anyway.
+    await run('git', ['config', '--global', '--add', 'safe.directory', '*']);
+
     // Configure git identity inside the repo
-    await run('git', ['-C', GIT_DIR, 'config', 'user.name', GIT_USER_NAME]);
-    await run('git', ['-C', GIT_DIR, 'config', 'user.email', GIT_USER_EMAIL]);
+    await run('git', ['-C', VAULT_DIR, 'config', 'user.name', GIT_USER_NAME]);
+    await run('git', ['-C', VAULT_DIR, 'config', 'user.email', GIT_USER_EMAIL]);
 
     // Configure Codeberg remote with embedded PAT (if env vars provided)
     const CODEBERG_TOKEN = process.env.CODEBERG_TOKEN;
@@ -66,10 +71,10 @@ async function main() {
     if (CODEBERG_TOKEN && CODEBERG_REPO) {
         const remoteUrl = `https://oauth2:${CODEBERG_TOKEN}@codeberg.org/${CODEBERG_REPO}.git`;
         try {
-            await run('git', ['-C', GIT_DIR, 'remote', 'set-url', GIT_REMOTE, remoteUrl]);
+            await run('git', ['-C', VAULT_DIR, 'remote', 'set-url', GIT_REMOTE, remoteUrl]);
             console.log(`[git-committer] remote ${GIT_REMOTE} updated to codeberg.org/${CODEBERG_REPO}`);
         } catch {
-            await run('git', ['-C', GIT_DIR, 'remote', 'add', GIT_REMOTE, remoteUrl]);
+            await run('git', ['-C', VAULT_DIR, 'remote', 'add', GIT_REMOTE, remoteUrl]);
             console.log(`[git-committer] remote ${GIT_REMOTE} added → codeberg.org/${CODEBERG_REPO}`);
         }
     }
@@ -78,24 +83,27 @@ async function main() {
     console.log('[git-committer] startup: running initial sync + mirror + commit');
     await commit();
 
-    // Spawn watch and debounce
+    // Spawn watch and respawn on exit (network blips, server restarts, etc.).
     let timer = null;
-    const watch = spawn('livesync-cli', ['watch'], { stdio: ['ignore', 'pipe', 'inherit'] });
+    function spawnWatch() {
+        const watch = spawn('livesync-cli', ['watch'], { stdio: ['ignore', 'pipe', 'inherit'] });
 
-    watch.stdout.on('data', () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => commit().catch(console.error), DEBOUNCE_MS);
-    });
+        watch.stdout.on('data', () => {
+            clearTimeout(timer);
+            timer = setTimeout(() => commit().catch(console.error), DEBOUNCE_MS);
+        });
 
-    watch.on('exit', (code) => {
-        console.error(`[git-committer] livesync-cli watch exited with code ${code}`);
-        process.exit(code ?? 1);
-    });
+        watch.on('exit', (code) => {
+            console.error(`[git-committer] livesync-cli watch exited with code ${code} — respawning in 5s`);
+            setTimeout(spawnWatch, 5000);
+        });
 
-    watch.on('error', (err) => {
-        console.error('[git-committer] failed to spawn livesync-cli watch:', err.message);
-        process.exit(1);
-    });
+        watch.on('error', (err) => {
+            console.error('[git-committer] spawn error for livesync-cli watch:', err.message);
+            setTimeout(spawnWatch, 5000);
+        });
+    }
+    spawnWatch();
 }
 
 main().catch((e) => {
