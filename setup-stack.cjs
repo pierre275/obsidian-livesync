@@ -119,6 +119,108 @@ async function waitForCouch(baseUrl, timeoutMs = 60000) {
     throw new Error(`CouchDB did not become ready within ${timeoutMs}ms`);
 }
 
+// ---------- shared: read .env into a key→value map ----------
+function readEnvFile(envFile) {
+    const text = fsSync.readFileSync(envFile, 'utf8');
+    const out = {};
+    for (const line of text.split('\n')) {
+        const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);
+        if (m) out[m[1]] = m[2];
+    }
+    return out;
+}
+
+// ---------- shared: generate setup URI and write it to disk ----------
+async function generateSetupUri(envFile) {
+    const env = readEnvFile(envFile);
+    const required = ['LIVESYNC_DATA_PATH', 'PUBLIC_HOST', 'COUCHDB_PORT',
+                      'COUCHDB_USER', 'COUCHDB_PASSWORD', 'COUCHDB_DBNAME', 'LIVESYNC_PASSPHRASE'];
+    for (const k of required) {
+        if (!env[k]) {
+            console.error(`[setup-uri] ${envFile} is missing required key ${k}.`);
+            console.error('[setup-uri] Delete the env file and re-run for fresh setup, or add the key manually.');
+            return null;
+        }
+    }
+
+    // Always rebuild settings.public.json from env values — the in-container
+    // settings.json gets mutated by livesync's first sync, so we don't trust it.
+    const publicSettings = {
+        couchDB_URI: `http://${env.PUBLIC_HOST}:${env.COUCHDB_PORT}`,
+        couchDB_USER: env.COUCHDB_USER,
+        couchDB_PASSWORD: env.COUCHDB_PASSWORD,
+        couchDB_DBNAME: env.COUCHDB_DBNAME,
+        passphrase: env.LIVESYNC_PASSPHRASE,
+        encrypt: true,
+        usePathObfuscation: false,
+        useDynamicIterationCount: false,
+        liveSync: false,
+        syncOnSave: false,
+        syncOnStart: false,
+        syncOnFileOpen: false,
+        usePluginSync: false,
+        isConfigured: true,
+    };
+    const settingsDir = path.join(env.LIVESYNC_DATA_PATH, '.livesync');
+    await fs.mkdir(settingsDir, { recursive: true });
+    const publicSettingsPath = path.join(settingsDir, 'settings.public.json');
+    await fs.writeFile(publicSettingsPath, JSON.stringify(publicSettings, null, 2), { mode: 0o600 });
+
+    const oneTime = crypto.randomBytes(6).toString('base64url');
+
+    // The entrypoint script auto-prepends LIVESYNC_DB_PATH (=/data), so do NOT
+    // pass /data ourselves — it would become commandArgs[0] (the passphrase).
+    const proc = spawnSync('docker',
+        ['compose', '-f', COMPOSE_FILE, '--env-file', envFile,
+         'run', '--rm', '--no-deps',
+         '--entrypoint', 'livesync-cli',
+         'git-committer',
+         '--settings', '/data/.livesync/settings.public.json',
+         'gen-setup-uri', oneTime],
+        { encoding: 'utf8' });
+
+    // Always remove the public settings file — secrets shouldn't linger.
+    await fs.unlink(publicSettingsPath).catch(() => {});
+
+    if (proc.status !== 0) {
+        console.error('[setup-uri] gen-setup-uri failed:', proc.stderr || proc.stdout);
+        return null;
+    }
+    const uri = proc.stdout.trim();
+    if (!uri.startsWith('obsidian://setuplivesync?')) {
+        console.error('[setup-uri] unexpected output from gen-setup-uri:', uri.slice(0, 200));
+        return null;
+    }
+
+    // Write URI + passphrase next to the env file so the user can copy it
+    // without dealing with truncated terminal output.
+    const envDir = path.dirname(envFile);
+    const uriFile = path.join(envDir, 'setup-uri.txt');
+    const body = [
+        '# Self-hosted LiveSync setup URI',
+        '# Paste this into Obsidian → Self-hosted LiveSync → Setup wizard → Use existing setup URI',
+        '# When prompted for the URI passphrase, use the value below.',
+        '',
+        `PASSPHRASE: ${oneTime}`,
+        '',
+        'URI:',
+        uri,
+        '',
+    ].join('\n');
+    await fs.writeFile(uriFile, body, { mode: 0o600 });
+
+    console.log('');
+    console.log('=== Obsidian setup URI ===');
+    console.log(`File:        ${uriFile}`);
+    console.log(`CouchDB URL: http://${env.PUBLIC_HOST}:${env.COUCHDB_PORT}`);
+    console.log(`Passphrase:  ${oneTime}`);
+    console.log('');
+    console.log('To get the URI:');
+    console.log(`  cat ${uriFile}`);
+    console.log('');
+    return { uri, oneTime, uriFile };
+}
+
 // ---------- update mode ----------
 // If .env.full-stack already exists in cwd or in the dir passed as argv[2],
 // skip all prompts and just `git pull && docker compose up -d --build`.
@@ -142,6 +244,9 @@ async function updateMode(envFile) {
     if (upRes.status !== 0) { console.error('[update] docker compose up failed'); process.exit(1); }
 
     console.log('\n=== Stack updated and running ===');
+
+    // 4. Always regenerate the setup URI so the user has a fresh one available.
+    await generateSetupUri(envFile);
     process.exit(0);
 }
 
@@ -223,8 +328,6 @@ async function main() {
 
     // The setup script reaches CouchDB via the host port mapping while configuring it.
     const localCouchUrl  = `http://127.0.0.1:${couchPort}`;
-    // Obsidian clients reach CouchDB via the public hostname + external port.
-    const publicCouchUrl = `http://${publicHost}:${couchPort}`;
     // git-committer reaches CouchDB via the docker bridge network (service name).
     const internalCouchUrl = `http://couchdb:5984`;
 
@@ -277,12 +380,10 @@ async function main() {
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
     console.log(`[setup] wrote ${settingsPath} (mode 0600)`);
 
-    // Also write a public-facing settings file used only to generate the setup URI
-    // (Obsidian clients connect from outside, so they need the public URL).
-    const publicSettingsPath = path.join(settingsDir, 'settings.public.json');
-    await fs.writeFile(publicSettingsPath, JSON.stringify({ ...settings, couchDB_URI: publicCouchUrl }, null, 2), { mode: 0o600 });
+    // (settings.public.json is built later inside generateSetupUri() from
+    // env vars — that way it always reflects the latest values.)
 
-    // 7. clone Codeberg repo
+    // 9. clone Codeberg repo
     if (await pathExists(vaultPath)) {
         const isGit = await pathExists(path.join(vaultPath, '.git'));
         if (!isGit) {
@@ -329,50 +430,26 @@ async function main() {
     }
     console.log('[setup] CouchDB configured');
 
-    // 10. Build the git-committer image (without starting) so we can use it to
-    //     generate the setup URI BEFORE the container's first sync runs and
-    //     mutates settings.json.
+    // 10. Build the git-committer image (without starting) so we can use it
+    //     to generate the setup URI before the container's first sync runs.
     console.log('[setup] building git-committer image...');
     const buildRes = spawnSync('docker',
         ['compose', '-f', COMPOSE_FILE, '--env-file', ENV_FILE, 'build', 'git-committer'],
         { stdio: 'inherit' });
     if (buildRes.status !== 0) { console.error('[setup] git-committer build failed'); process.exit(1); }
 
-    // 11. Generate setup URI for Obsidian. Uses settings.public.json (with the
-    //     public-facing CouchDB URL) — Obsidian clients connect from outside.
-    const oneTimePass = crypto.randomBytes(6).toString('base64url');
-    const setupRes = spawnSync('docker',
-        ['compose', '-f', COMPOSE_FILE, '--env-file', ENV_FILE,
-         'run', '--rm', '--no-deps',
-         '--entrypoint', 'livesync-cli',
-         'git-committer',
-         '--settings', '/data/.livesync/settings.public.json',
-         'gen-setup-uri', oneTimePass],
-        { encoding: 'utf8' });
-    if (setupRes.status !== 0) {
-        console.error('[setup] gen-setup-uri failed:', setupRes.stderr);
-        process.exit(1);
-    }
-    const setupUri = setupRes.stdout.trim();
-    // Remove the public settings file — secrets shouldn't linger on disk.
-    await fs.unlink(publicSettingsPath).catch(() => {});
-
-    // 12. Now start git-committer
+    // 11. Start git-committer
     console.log('[setup] starting git-committer...');
     const cup = spawnSync('docker',
         ['compose', '-f', COMPOSE_FILE, '--env-file', ENV_FILE, 'up', '-d', 'git-committer'],
         { stdio: 'inherit' });
     if (cup.status !== 0) { console.error('[setup] git-committer start failed'); process.exit(1); }
 
-    console.log('\n=== Stack is up ===\n');
-    console.log(`CouchDB exposed at: ${publicCouchUrl}`);
-    console.log('');
-    console.log('Paste this into the Obsidian Self-hosted LiveSync plugin (Setup wizard → Use existing setup URI):');
-    console.log('');
-    console.log(setupUri);
-    console.log('');
-    console.log(`When prompted for the URI passphrase, use: ${oneTimePass}`);
-    console.log('');
+    console.log('\n=== Stack is up ===');
+
+    // 12. Generate setup URI (writes it to setup-uri.txt next to .env.full-stack)
+    const result = await generateSetupUri(ENV_FILE);
+    if (!result) { process.exit(1); }
 }
 
 main().catch((e) => { console.error('[setup] fatal:', e.message); process.exit(1); });
