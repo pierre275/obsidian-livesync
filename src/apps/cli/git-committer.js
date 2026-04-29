@@ -51,6 +51,11 @@ function ensureSettingsFromEnv() {
     if (process.env.DB_NAME_SUFFIX) {
         settings.additionalSuffixOfDatabaseName = process.env.DB_NAME_SUFFIX;
     }
+    // The bot is a one-way materialiser: it should never block on conflicts.
+    // Force-write whichever revision wins so notes always reach the git repo;
+    // conflict resolution happens on the human-driven Obsidian side.
+    settings.writeDocumentsIfConflicted = true;
+    settings.resolveConflictsByNewerFile = true;
     // livesync stores credentials encrypted with a key cached in localStorage
     // when configPassphraseStore is empty. Setting LOCK_LOCAL_STORAGE keeps the
     // plain fields authoritative each run.
