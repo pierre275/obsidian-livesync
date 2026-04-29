@@ -1,0 +1,17 @@
+services:
+  git-committer:
+    network_mode: ""
+    networks:
+      - smoketest
+    volumes:
+      - /tmp/livesync-local/bare-repo.git:/tmp/livesync-local/bare-repo.git
+  couchdb:
+    network_mode: ""
+    networks:
+      - smoketest
+    ports:
+      - "5984:5984"
+
+networks:
+  smoketest:
+    driver: bridge

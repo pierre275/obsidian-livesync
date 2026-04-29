@@ -42,6 +42,15 @@ function ensureSettingsFromEnv() {
     if (LIVESYNC_PASSPHRASE) settings.passphrase = LIVESYNC_PASSPHRASE;
     settings.encrypt = true;
     settings.isConfigured = true;
+    // Match modern Obsidian plugin defaults so we can decrypt data written by
+    // current LiveSync clients. Without these, decryption falls back to v1
+    // and AES jobs fail against v2 ciphertexts produced by recent plugin builds.
+    settings.E2EEAlgorithm        = process.env.E2EE_ALGORITHM        ?? 'v2';
+    settings.hashAlg              = process.env.HASH_ALG              ?? 'xxhash64';
+    settings.chunkSplitterVersion = process.env.CHUNK_SPLITTER_VERSION ?? 'v3-rabin-karp';
+    if (process.env.DB_NAME_SUFFIX) {
+        settings.additionalSuffixOfDatabaseName = process.env.DB_NAME_SUFFIX;
+    }
     // livesync stores credentials encrypted with a key cached in localStorage
     // when configPassphraseStore is empty. Setting LOCK_LOCAL_STORAGE keeps the
     // plain fields authoritative each run.
@@ -86,6 +95,14 @@ async function commit() {
             console.error('[git-committer] sync exited non-zero — continuing with mirror anyway:', e.message);
         }
         await run('livesync-cli', ['mirror']);
+        // mirror only handles regular notes; internal files (.obsidian/*) live
+        // under the `i:` doc prefix which mirror skips. mirror-internal walks
+        // them and writes to disk so the bot's git commit picks them up.
+        try {
+            await run('livesync-cli', ['mirror-internal']);
+        } catch (e) {
+            console.error('[git-committer] mirror-internal failed (non-fatal):', e.message);
+        }
         await run('git', ['-C', VAULT_DIR, 'add', '.']);
         const status = await run('git', ['-C', VAULT_DIR, 'status', '--porcelain']);
         if (!status) {

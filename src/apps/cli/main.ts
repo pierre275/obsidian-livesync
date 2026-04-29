@@ -391,8 +391,11 @@ export async function main() {
             core.services.vault.isTargetFile.addHandler(async (target) => {
                 const vaultPath = stripAllPrefixes(getPathFromUXFileInfo(target));
                 const parts = vaultPath.split(path.sep);
-                // if some part of the path starts with dot, treat it as internal file and ignore.
-                if (parts.some((part) => part.startsWith("."))) {
+                // Exclude only LiveSync's own state and the git repo. Allow user
+                // dot-folders like .obsidian/ so plugin-driven internal-files sync
+                // can replicate them through mirror.
+                const EXCLUDE_DOT_DIRS = new Set([".livesync", ".git", ".trash"]);
+                if (EXCLUDE_DOT_DIRS.has(parts[0])) {
                     return await Promise.resolve(false);
                 }
                 // The CLI uses the vault dir as both vault root AND local PouchDB

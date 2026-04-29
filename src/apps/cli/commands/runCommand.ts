@@ -367,5 +367,77 @@ export async function runCommand(options: CLIOptions, context: CLICommandContext
         return await performFullScan(core as any, log, errorManager, false, true);
     }
 
+    if (options.command === "mirror-internal") {
+        // Walk every "i:" prefixed doc in the local DB and write it to disk
+        // under its real (stripped) path. Mirror's performFullScan deliberately
+        // skips the `i:` range (see LiveSyncLocalDB.findAllNormalDocs), so
+        // internal files like .obsidian/* never reach storage on a CLI-only host.
+        // We can't reuse fileHandler.dbToStorage directly: its internal getPath()
+        // keeps the `i:` prefix, so the write would land at vault/i:.obsidian/…
+        // instead of vault/.obsidian/… — we fetch content and write to disk
+        // ourselves at the stripped path.
+        console.error("[Command] mirror-internal");
+        const { readContent, readAsBlob } = await import("@lib/common/utils");
+        const localDB = core.services.database.localDatabase as any;
+        let total = 0;
+        let written = 0;
+        let skipped = 0;
+        let removed = 0;
+        for await (const doc of localDB.findEntries("i:", "i:\u{10ffff}", {})) {
+            if (doc._id.startsWith("_")) continue;
+            if (doc.type !== "newnote" && doc.type !== "plain") continue;
+            total++;
+            const fullPath = core.services.path.getPath(doc) as FilePathWithPrefix;
+            const strippedPath = stripAllPrefixes(fullPath) as FilePathWithPrefix;
+            // honour the same isTargetFile filter the rest of the CLI uses.
+            if (!(await core.services.vault.isTargetFile(strippedPath))) {
+                skipped++;
+                continue;
+            }
+            const onDiskPath = path.join(vaultPath, strippedPath);
+            if (doc.deleted || doc._deleted) {
+                try {
+                    await fs.unlink(onDiskPath);
+                    removed++;
+                } catch {
+                    skipped++;
+                }
+                continue;
+            }
+            try {
+                const fullDoc = await core.serviceModules.databaseFileAccess.fetchEntryFromMeta(doc);
+                if (!fullDoc) {
+                    skipped++;
+                    continue;
+                }
+                if (fullDoc.size !== 0 && fullDoc.size !== readAsBlob(fullDoc).size) {
+                    console.error(`[mirror-internal] ${strippedPath} corrupted, skipping`);
+                    skipped++;
+                    continue;
+                }
+                const data: any = readContent(fullDoc);
+                await fs.mkdir(path.dirname(onDiskPath), { recursive: true });
+                if (typeof data === "string") {
+                    await fs.writeFile(onDiskPath, data, "utf-8");
+                } else if (data instanceof Uint8Array) {
+                    await fs.writeFile(onDiskPath, data);
+                } else if (data instanceof ArrayBuffer) {
+                    await fs.writeFile(onDiskPath, new Uint8Array(data));
+                } else if (data && typeof data.arrayBuffer === "function") {
+                    await fs.writeFile(onDiskPath, new Uint8Array(await data.arrayBuffer()));
+                } else {
+                    throw new Error(`unsupported content type: ${Object.prototype.toString.call(data)}`);
+                }
+                written++;
+            } catch (e: any) {
+                console.error(`[mirror-internal] ${strippedPath} failed: ${e?.message ?? e}`);
+            }
+        }
+        console.error(
+            `[mirror-internal] total=${total} written=${written} removed=${removed} skipped=${skipped}`
+        );
+        return true;
+    }
+
     throw new Error(`Unsupported command: ${options.command}`);
 }
