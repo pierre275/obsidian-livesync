@@ -26,6 +26,7 @@ import { VALID_COMMANDS } from "./commands/types";
 import type { CLICommand, CLIOptions } from "./commands/types";
 import { getPathFromUXFileInfo } from "@lib/common/typeUtils";
 import { stripAllPrefixes } from "@lib/string_and_binary/path";
+import { SuffixDatabaseName } from "@lib/common/types";
 
 const SETTINGS_FILE = ".livesync/settings.json";
 ensureGlobalNodeLocalStorage();
@@ -392,6 +393,14 @@ export async function main() {
                 const parts = vaultPath.split(path.sep);
                 // if some part of the path starts with dot, treat it as internal file and ignore.
                 if (parts.some((part) => part.startsWith("."))) {
+                    return await Promise.resolve(false);
+                }
+                // The CLI uses the vault dir as both vault root AND local PouchDB
+                // location, so the LevelDB-style data dir (`<dbname>-livesync-v2/`)
+                // sits inside the vault. Without this filter, mirror would treat its
+                // own database files as vault content and round-trip them through
+                // CouchDB on every cycle.
+                if (parts.some((part) => part.endsWith(SuffixDatabaseName))) {
                     return await Promise.resolve(false);
                 }
                 return await Promise.resolve(true);
